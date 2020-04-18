@@ -126,11 +126,11 @@ def LLA_ECEF(pos):
 g = 9.8
 gps_std = 3
 gps_vel = .2
-acc_bias0 = [.25, .077, -.12]
+acc_bias01 = [.25, .077, -.12]
 acc_mark = 0.0005 * g
 acc_T = 300
 acc_noise = .12 * g
-gyro_bias0 = [2.4 * 10 ** -4, -1.3 * 10 ** -4, 5.6 * 10 ** -4]
+gyro_bias01 = [2.4 * 10 ** -4, -1.3 * 10 ** -4, 5.6 * 10 ** -4]
 gyro_mark = .3
 gyro_T = 300
 gyro_noise = .95
@@ -171,8 +171,8 @@ nums = [0, 1, 2]
 for num in nums:
     INS_data.iloc[0, num] = pos_data.iloc[0, num]
     INS_data.iloc[0, num + 6] = vel_data.iloc[0, num]
-    INS_data.iloc[0, num + 9] = acc_bias0[num]
-    INS_data.iloc[0, num + 12] = gyro_bias0[num]
+    INS_data.iloc[0, num + 9] = acc_bias01[num]
+    INS_data.iloc[0, num + 12] = gyro_bias01[num]
 
 old_time = INS_data.index[0]
 
@@ -311,5 +311,5 @@ for time in INS_data.index:
             INS_data.loc[(time, 'g_b_z')] = gyro_bias0[2]
         old_time = time
         P_old = P_new
-        if time == INS_data.index[51]:
+        if time == 472.0:
             break
