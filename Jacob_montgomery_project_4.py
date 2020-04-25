@@ -16,7 +16,8 @@ import numpy as np
 from numpy import linalg as la
 from scipy import linalg as las
 from matplotlib import pyplot as plt
-
+import navpy
+from navpy import lla2ned
 
 # %% Functions
 
@@ -115,7 +116,7 @@ def LLA_ECEF(pos):
     f = 1 / 298.257223563
     e = m.sqrt(f * (2 - f))
     b_2 = - a**2 * (e**2 - 1)
-    N = a/m.sqrt(1 - e**2 * (m.sin((pos[0]))))
+    N = a/m.sqrt(1 - e**2 * (m.sin((pos[0]))**2))
     X = (N+pos[2])*m.cos((pos[0])) * m.cos((pos[1]))
     Y = (N + pos[2]) * m.cos((pos[0])) * m.sin((pos[1]))
     Z = ((b_2/(a**2)*N + pos[2])) * m.sin((pos[0]))
@@ -127,12 +128,10 @@ g = 9.8
 gps_std = 3
 gps_vel = .2
 acc_bias01 = [.25, .077, -.12]
-acc_bias0 = acc_bias01
 acc_mark = 0.0005 * g
 acc_T = 300
 acc_noise = .12 * g
 gyro_bias01 = [2.4 * 10 ** -4, -1.3 * 10 ** -4, 5.6 * 10 ** -4]
-gyro_bias0 = gyro_bias01
 gyro_mark = .3
 gyro_T = 300
 gyro_noise = .95
@@ -161,6 +160,10 @@ vel_data.index = imu_data.index
 
 # %% INS Formulation
 
+gyro_bias0 = gyro_bias01
+
+acc_bias0 = acc_bias01
+
 cols = ['lat', 'long', 'h', 'phi', 'theta', 'psi', 'vel_N', 'vel_E', 'vel_D', 'a_b_x', 'a_b_y', 'a_b_z',
         'g_b_x', 'g_b_y', 'g_b_z']
 
@@ -185,9 +188,12 @@ PSDg = (2 * m.radians(gyro_mark)**2 / gyro_T)
 S = np.diag((acc_noise**2, acc_noise**2, acc_noise**2, m.radians(gyro_noise)**2, m.radians(gyro_noise)**2,
              m.radians(gyro_noise)**2, PSDa, PSDa, PSDa, PSDg, PSDg, PSDg))
 
-P_old = 10 * np.diag((gps_std**2, gps_std**2, gps_std**2, gps_vel**2, gps_vel**2, gps_vel**2, m.radians(10)**2,
-                      m.radians(10)**2, m.radians(10)**2, (10 *acc_mark)**2, (10 *acc_mark)**2, (10 *acc_mark)**2,
-                      (10 * m.radians(gyro_mark))**2, (10 * m.radians(gyro_mark))**2, (10 * m.radians(gyro_mark))**2))
+P_old = 10 * np.diag((gps_std**2, gps_std**2, gps_std**2,
+                      gps_vel**2, gps_vel**2, gps_vel**2, m.radians(10)**2,
+                      m.radians(10)**2, m.radians(10)**2, (10 *acc_mark)**2,
+                      (10 *acc_mark)**2, (10 *acc_mark)**2,
+                      (10 * m.radians(gyro_mark))**2,
+                      (10 * m.radians(gyro_mark))**2, (10 * m.radians(gyro_mark))**2))
 
 for time in INS_data.index:
     if time != INS_data.index[0]:
@@ -243,12 +249,12 @@ for time in INS_data.index:
         alt = pos_new[2]
         AA = big_A(omega_n_e_n, local_grav(lat, h), omega_n_i_e, fb, omega_n_i_n, euler_old)
         Ms = M(phi, theta, psi)
-        Q = (np.identity(15) + .02 * AA) @ (.02 * Ms @ S @ Ms.T)
-        F = las.expm(AA * .02)
+        Q = (np.identity(15) + dt * AA) @ (dt * Ms @ S @ Ms.T)
+        F = las.expm(AA * dt)
         top = np.hstack((-AA, Ms @ S @ Ms.T))
         bottom = np.hstack((np.zeros((15, 15)), AA.T))
         BIG = np.vstack((top, bottom))
-        BIG = las.expm(np.vstack((top, bottom)) * .02)
+        BIG = las.expm(np.vstack((top, bottom)) * dt)
         BR = BIG[15:30, 15:30]
         TR = BIG[0:15, 15:30]
         Q_new = BR.T @ TR
@@ -260,16 +266,28 @@ for time in INS_data.index:
                         [vel_data.loc[(time, 'vel_D')]]])
             pos_gps = np.array([[pos_data.loc[(time, 'Lat')]], [pos_data.loc[(time, 'Long')]],
                                 [pos_data.loc[(time, 'Alt')]]])
-            pos_gps = LLA_ECEF(pos_gps)
-            pos_ins = LLA_ECEF(pos_new)
+            # pos_gps = LLA_ECEF(pos_gps)
+            # pos_ins = LLA_ECEF(pos_new)
+            gps_NED = navpy.lla2ned(pos_gps[0], pos_gps[1], pos_gps[2],
+                                INS_data.loc[(INS_data.index[0], 'lat')],
+                                INS_data.loc[(INS_data.index[0], 'long')],
+                                INS_data.loc[(INS_data.index[0], 'h')],
+                                latlon_unit='rad', alt_unit='m', model='wgs84')
+            ins_NED = navpy.lla2ned(pos_new[0], pos_new[1], pos_new[2],
+                                    INS_data.loc[(INS_data.index[0], 'lat')],
+                                    INS_data.loc[(INS_data.index[0], 'long')],
+                                    INS_data.loc[(INS_data.index[0], 'h')],
+                                    latlon_unit='rad', alt_unit='m',
+                                    model='wgs84')
             diff_vel = velo_new - vel_gps
-            diff_pos = pos_ins - pos_gps
+            diff_pos = ins_NED - gps_NED
+            diff_pos = diff_pos.reshape((-1, 1))
             H = np.asarray(np.bmat([[np.identity(6), np.zeros((6, 9))]]))
             R = np.diag((9, 9, 9, .2**2, .2**2, .2**2))
             K_gain = P_new@H.T@la.inv((H@P_new@H.T+R))
-            v = np.array([[3], [3], [3], [.2], [.2], [.2]])
+            # v = np.array([[3], [3], [3], [.2], [.2], [.2]])
             del_x = np.vstack((diff_pos, diff_vel))
-            del_y = del_x + v
+            del_y = del_x
             P_new = (np.identity(15) - K_gain@H)@P_new
             P_new = .5 * (P_new + P_new.T)
             del_x_new = K_gain@del_y
@@ -313,5 +331,131 @@ for time in INS_data.index:
             INS_data.loc[(time, 'g_b_z')] = gyro_bias0[2]
         old_time = time
         P_old = P_new
-        # if time == 472.0:
+        # if time == INS_data.index[326]:
         #     break
+
+# %% Plots
+
+cols = ['X', 'Y', 'Z']
+
+ECEF_poss = pd.DataFrame(index=imu_data.index, columns=cols)
+
+NED_possECEF_poss = ECEF_poss.fillna(0)
+
+NED_poss = pd.DataFrame(index=imu_data.index, columns=cols)
+
+NED_poss = NED_poss.fillna(0)
+
+for time in INS_data.index:
+    poss = np.array([[INS_data.loc[(time, 'lat')]], [INS_data.loc[(time, 'long')]], [INS_data.loc[(time, 'h')]]])
+    ECEF_pos = LLA_ECEF(poss)
+    ECEF_poss.loc[(time, 'X')] = ECEF_pos[0]
+    ECEF_poss.loc[(time, 'Y')] = ECEF_pos[1]
+    ECEF_poss.loc[(time, 'Z')] = ECEF_pos[2]
+    NED = navpy.lla2ned(INS_data.loc[(time, 'lat')], INS_data.loc[(time, 'long')], INS_data.loc[(time, 'h')],
+                        INS_data.loc[(INS_data.index[0], 'lat')], INS_data.loc[(INS_data.index[0], 'long')],
+                        INS_data.loc[(INS_data.index[0], 'h')], latlon_unit='rad', alt_unit='m', model='wgs84')
+    NED_poss.loc[(time, 'X')] = NED[0]
+    NED_poss.loc[(time, 'Y')] = NED[1]
+    NED_poss.loc[(time, 'Z')] = NED[2]
+    if time == INS_data.index[-1]:
+        break
+
+plt.plot(NED_poss.iloc[0:-1, 1], NED_poss.iloc[0:-1, 0])
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('East')
+plt.ylabel('North')
+plt.title('NED Pos')
+plt.show()
+
+plt.plot(NED_poss.iloc[0:-1, 2])
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time (s)')
+plt.ylabel('Down')
+plt.title('Alt')
+plt.show()
+
+plt.plot(INS_data.iloc[0:-1, 6])
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time(s)')
+plt.ylabel('Velocity N')
+plt.title('Velocity N')
+plt.show()
+
+plt.plot(INS_data.iloc[0:-1, 7])
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time(s)')
+plt.ylabel('Velocity E')
+plt.title('Velocity E')
+plt.show()
+
+plt.plot(INS_data.iloc[0:-1, 8])
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time(s)')
+plt.ylabel('Velocity D')
+plt.title('Velocity D')
+plt.show()
+
+plt.plot(INS_data.iloc[0:-1, 4] * 180/m.pi)
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time(s)')
+plt.ylabel('Phi (deg)')
+plt.title('Phi')
+plt.show()
+
+plt.plot(INS_data.iloc[0:-1, 5] * 180/m.pi)
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time(s)')
+plt.ylabel('Theta (deg)')
+plt.title('Theta')
+plt.show()
+
+plt.plot(INS_data.iloc[0:-1, 6] * 180/m.pi)
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time(s)')
+plt.ylabel('Psi (deg)')
+plt.title('Psi')
+plt.show()
+
+
+plt.plot(INS_data.a_b_x)
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time (s)')
+plt.ylabel('Bias')
+plt.title('Acc Bias X')
+plt.show()
+
+plt.plot(INS_data.a_b_y)
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time (s)')
+plt.ylabel('Bias')
+plt.title('Acc Bias Y')
+plt.show()
+
+plt.plot(INS_data.a_b_z)
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time (s)')
+plt.ylabel('Bias')
+plt.title('Acc Bias Z')
+plt.show()
+
+plt.plot(INS_data.g_b_x)
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time (s)')
+plt.ylabel('Bias')
+plt.title('Gyro Bias x')
+plt.show()
+
+plt.plot(INS_data.g_b_y)
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time (s)')
+plt.ylabel('Bias')
+plt.title('Gyro Bias y')
+plt.show()
+
+plt.plot(INS_data.g_b_z)
+plt.grid(b=None, which='major', axis='both')
+plt.xlabel('Time (s)')
+plt.ylabel('Bias')
+plt.title('Gyro Bias z')
+plt.show()
